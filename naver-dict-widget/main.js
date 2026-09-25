@@ -1,6 +1,6 @@
 // 네이버 영어사전 위젯 - 작은 창, 항상 위, 트레이 상주, 단축키 호출
 const {
-  app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, shell, screen, nativeImage,
+  app, BrowserWindow, WebContentsView, ipcMain, Tray, Menu, globalShortcut, clipboard, shell, screen, nativeImage,
 } = require('electron');
 const fs = require('fs');
 const path = require('path');
@@ -64,45 +64,68 @@ function isDictUrl(url) {
   }
 }
 
+const BAR_H = 28;
+let dict = null; // 사전 페이지 (WebContentsView 의 webContents)
+
+function layoutDict(view) {
+  const [w, h] = win.getContentSize();
+  view.setBounds({ x: 0, y: BAR_H, width: w, height: Math.max(0, h - BAR_H) });
+}
+
+function goBack() { const n = dict.navigationHistory; if (n.canGoBack()) n.goBack(); }
+function goForward() { const n = dict.navigationHistory; if (n.canGoForward()) n.goForward(); }
+function goHome() { dict.loadURL(settings.homeUrl); }
+
+// 창 안 단축키: Esc 숨기기, Alt+←/→ 뒤로/앞으로, Ctrl+R 새로고침, Alt+Home 처음화면
+function handleKeys(event, input) {
+  if (input.type !== 'keyDown') return;
+  let handled = true;
+  if (input.key === 'Escape') win.hide();
+  else if (input.alt && input.key === 'ArrowLeft') goBack();
+  else if (input.alt && input.key === 'ArrowRight') goForward();
+  else if (input.alt && input.key === 'Home') goHome();
+  else if (input.control && input.key.toLowerCase() === 'r') dict.reload();
+  else handled = false;
+  if (handled) event.preventDefault();
+}
+
 function createWindow() {
+  // 기본 제목줄 없는 창 + 직접 만든 얇은 상단 바(bar.html)
   win = new BrowserWindow({
     ...initialBounds(),
     minWidth: 300,
     minHeight: 300,
+    frame: false,
     alwaysOnTop: settings.alwaysOnTop,
-    skipTaskbar: false,
-    autoHideMenuBar: true,
     title: '영어사전',
     icon: path.join(__dirname, 'assets', 'icon.png'),
+    backgroundColor: '#ffffff',
     show: false,
-    webPreferences: { contextIsolation: true, sandbox: true },
+    webPreferences: { contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'bar-preload.js') },
   });
   win.setMenu(null);
   win.setOpacity(settings.opacity);
-  if (settings.mobileLayout) win.webContents.setUserAgent(MOBILE_UA);
-  win.loadURL(settings.homeUrl);
-  win.once('ready-to-show', () => win.show());
+  win.loadFile(path.join(__dirname, 'bar.html'));
+  win.once('ready-to-show', () => { win.show(); sendState(); });
+  win.webContents.on('before-input-event', handleKeys);
+
+  const view = new WebContentsView({ webPreferences: { contextIsolation: true, sandbox: true } });
+  win.contentView.addChildView(view);
+  dict = view.webContents;
+  layoutDict(view);
+  win.on('resize', () => layoutDict(view));
+  if (settings.mobileLayout) dict.setUserAgent(MOBILE_UA);
+  dict.loadURL(settings.homeUrl);
 
   // 사전 안의 링크는 창 안에서, 그 외(광고·외부 링크)는 기본 브라우저로
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isDictUrl(url)) win.loadURL(url);
+  dict.setWindowOpenHandler(({ url }) => {
+    if (isDictUrl(url)) dict.loadURL(url);
     else shell.openExternal(url);
     return { action: 'deny' };
   });
-
-  // 창 안 단축키: Esc 숨기기, Alt+←/→ 뒤로/앞으로, Ctrl+R 새로고침, Alt+Home 처음화면
-  win.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown') return;
-    const nav = win.webContents.navigationHistory;
-    let handled = true;
-    if (input.key === 'Escape') win.hide();
-    else if (input.alt && input.key === 'ArrowLeft') nav.canGoBack() && nav.goBack();
-    else if (input.alt && input.key === 'ArrowRight') nav.canGoForward() && nav.goForward();
-    else if (input.alt && input.key === 'Home') win.loadURL(settings.homeUrl);
-    else if (input.control && input.key.toLowerCase() === 'r') win.webContents.reload();
-    else handled = false;
-    if (handled) event.preventDefault();
-  });
+  dict.on('before-input-event', handleKeys);
+  dict.on('did-navigate-in-page', sendState);
+  dict.on('did-navigate', sendState);
 
   const remember = () => {
     if (!win.isMinimized() && !win.isMaximized()) {
@@ -113,7 +136,7 @@ function createWindow() {
   win.on('moved', remember);
   win.on('resized', remember);
 
-  // X 버튼은 종료가 아니라 트레이로 숨김
+  // 닫기는 종료가 아니라 트레이로 숨김
   win.on('close', (e) => {
     if (!quitting) {
       e.preventDefault();
@@ -122,10 +145,26 @@ function createWindow() {
   });
 }
 
+function sendState() {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('state', {
+    pinned: settings.alwaysOnTop,
+    canGoBack: dict.navigationHistory.canGoBack(),
+  });
+}
+
+ipcMain.on('bar', (_e, action) => {
+  if (action === 'back') goBack();
+  else if (action === 'home') goHome();
+  else if (action === 'pin') setAlwaysOnTop(!settings.alwaysOnTop);
+  else if (action === 'hide') win.hide();
+});
+
 function showWindow() {
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
+  dict.focus();
 }
 
 function toggleWindow() {
@@ -135,7 +174,7 @@ function toggleWindow() {
 
 function lookup(text) {
   const q = (text || '').trim().replace(/\s+/g, ' ').slice(0, 100);
-  if (q) win.loadURL(settings.searchUrl.replace('{q}', encodeURIComponent(q)));
+  if (q) dict.loadURL(settings.searchUrl.replace('{q}', encodeURIComponent(q)));
   showWindow();
 }
 
@@ -148,6 +187,7 @@ function setAlwaysOnTop(on) {
   win.setAlwaysOnTop(on);
   saveSettings();
   buildTrayMenu();
+  sendState();
 }
 
 function setOpacity(value) {
@@ -159,9 +199,9 @@ function setOpacity(value) {
 
 function setMobileLayout(on) {
   settings.mobileLayout = on;
-  win.webContents.setUserAgent(on ? MOBILE_UA : app.userAgentFallback);
+  dict.setUserAgent(on ? MOBILE_UA : app.userAgentFallback);
   saveSettings();
-  win.loadURL(settings.homeUrl);
+  goHome();
   buildTrayMenu();
 }
 
@@ -181,7 +221,7 @@ function buildTrayMenu() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `열기 / 숨기기  (${pretty(settings.hotkeyToggle)})`, click: toggleWindow },
     { label: `복사한 단어 검색  (${pretty(settings.hotkeyLookup)})`, click: lookupClipboard },
-    { label: '처음 화면', click: () => { win.loadURL(settings.homeUrl); showWindow(); } },
+    { label: '처음 화면', click: () => { goHome(); showWindow(); } },
     { type: 'separator' },
     { label: '항상 위에 표시', type: 'checkbox', checked: settings.alwaysOnTop, click: (i) => setAlwaysOnTop(i.checked) },
     { label: '작은 창용 화면 (모바일)', type: 'checkbox', checked: settings.mobileLayout, click: (i) => setMobileLayout(i.checked) },
