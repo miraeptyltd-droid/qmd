@@ -64,12 +64,66 @@ function isDictUrl(url) {
   }
 }
 
-const BAR_H = 28;
-let dict = null; // 사전 페이지 (WebContentsView 의 webContents)
+// 상단 바 없음: 사전 화면이 창 전체를 채우고, 맨 위 가장자리에 마우스를 올릴 때만
+// 반투명 손잡이(옮기기·버튼)가 나타남
+const HANDLE_IDLE_H = 6;   // 평소: 보이지 않는 얇은 감지 영역
+const HANDLE_OPEN_H = 34;  // 마우스를 올렸을 때
+let dict = null;   // 사전 페이지
+let handle = null; // 손잡이 (bar.html, 투명 배경으로 사전 위에 겹침)
+let handleOpen = false;
+let dragTimer = null;
 
-function layoutDict(view) {
+// 스크롤바: 평소엔 안 보이고 스크롤하는 동안만 반투명하게
+const SCROLLBAR_CSS = `
+  ::-webkit-scrollbar { width: 7px; height: 7px; background: transparent; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+  .qd-scrolling::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, .28); }
+`;
+const SCROLLBAR_JS = `(() => {
+  if (window.__qdScroll) return;
+  window.__qdScroll = true;
+  const timers = new WeakMap();
+  document.addEventListener('scroll', (e) => {
+    const el = e.target === document ? document.scrollingElement : e.target;
+    if (!el || !el.classList) return;
+    el.classList.add('qd-scrolling');
+    clearTimeout(timers.get(el));
+    timers.set(el, setTimeout(() => el.classList.remove('qd-scrolling'), 900));
+  }, true);
+})();`;
+
+function layout() {
   const [w, h] = win.getContentSize();
-  view.setBounds({ x: 0, y: BAR_H, width: w, height: Math.max(0, h - BAR_H) });
+  dict.view.setBounds({ x: 0, y: 0, width: w, height: h });
+  handle.view.setBounds({ x: 0, y: 0, width: w, height: handleOpen ? HANDLE_OPEN_H : HANDLE_IDLE_H });
+}
+
+function setHandleOpen(open) {
+  if (dragTimer) return; // 끄는 중에는 접지 않음
+  handleOpen = open;
+  layout();
+}
+
+// 창 옮기기: 손잡이를 누르고 있는 동안 창이 마우스를 따라감
+function startDrag() {
+  stopDrag();
+  const cursor = screen.getCursorScreenPoint();
+  const [wx, wy] = win.getPosition();
+  const dx = cursor.x - wx;
+  const dy = cursor.y - wy;
+  dragTimer = setInterval(() => {
+    const p = screen.getCursorScreenPoint();
+    win.setPosition(p.x - dx, p.y - dy);
+  }, 10);
+}
+
+function stopDrag() {
+  if (!dragTimer) return;
+  clearInterval(dragTimer);
+  dragTimer = null;
+  settings.bounds = win.getBounds();
+  saveSettings();
 }
 
 function goBack() { const n = dict.navigationHistory; if (n.canGoBack()) n.goBack(); }
@@ -90,32 +144,50 @@ function handleKeys(event, input) {
 }
 
 function createWindow() {
-  // 기본 제목줄 없는 창 + 직접 만든 얇은 상단 바(bar.html)
   win = new BrowserWindow({
     ...initialBounds(),
     minWidth: 300,
     minHeight: 300,
-    frame: false,
+    frame: false, // Windows 제목줄 없음 (가장자리를 끌어 크기 조절은 가능)
     alwaysOnTop: settings.alwaysOnTop,
     title: '영어사전',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     backgroundColor: '#ffffff',
     show: false,
-    webPreferences: { contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'bar-preload.js') },
   });
   win.setMenu(null);
   win.setOpacity(settings.opacity);
-  win.loadFile(path.join(__dirname, 'bar.html'));
-  win.once('ready-to-show', () => { win.show(); sendState(); });
-  win.webContents.on('before-input-event', handleKeys);
 
-  const view = new WebContentsView({ webPreferences: { contextIsolation: true, sandbox: true } });
-  win.contentView.addChildView(view);
-  dict = view.webContents;
-  layoutDict(view);
-  win.on('resize', () => layoutDict(view));
+  const dictView = new WebContentsView({ webPreferences: { contextIsolation: true, sandbox: true } });
+  dict = dictView.webContents;
+  dict.view = dictView;
+  win.contentView.addChildView(dictView);
+
+  const handleView = new WebContentsView({
+    webPreferences: { contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'bar-preload.js') },
+  });
+  handleView.setBackgroundColor('#00000000');
+  handle = handleView.webContents;
+  handle.view = handleView;
+  win.contentView.addChildView(handleView); // 사전 위에 겹침
+  handle.loadFile(path.join(__dirname, 'bar.html'));
+
+  layout();
+  win.on('resize', layout);
+  win.on('blur', stopDrag);
+
   if (settings.mobileLayout) dict.setUserAgent(MOBILE_UA);
   dict.loadURL(settings.homeUrl);
+  // 자동 실행(--hidden)일 땐 트레이에만. 네트워크가 느려도 4초 뒤엔 창을 띄움
+  if (!process.argv.includes('--hidden')) {
+    dict.once('did-finish-load', () => win.show());
+    setTimeout(() => { if (!win.isVisible()) win.show(); }, 4000);
+  }
+
+  dict.on('dom-ready', () => {
+    dict.insertCSS(SCROLLBAR_CSS).catch(() => {});
+    dict.executeJavaScript(SCROLLBAR_JS).catch(() => {});
+  });
 
   // 사전 안의 링크는 창 안에서, 그 외(광고·외부 링크)는 기본 브라우저로
   dict.setWindowOpenHandler(({ url }) => {
@@ -124,11 +196,13 @@ function createWindow() {
     return { action: 'deny' };
   });
   dict.on('before-input-event', handleKeys);
+  handle.on('before-input-event', handleKeys);
   dict.on('did-navigate-in-page', sendState);
   dict.on('did-navigate', sendState);
+  handle.on('did-finish-load', sendState);
 
   const remember = () => {
-    if (!win.isMinimized() && !win.isMaximized()) {
+    if (!dragTimer && !win.isMinimized() && !win.isMaximized()) {
       settings.bounds = win.getBounds();
       saveSettings();
     }
@@ -146,8 +220,8 @@ function createWindow() {
 }
 
 function sendState() {
-  if (!win || win.isDestroyed()) return;
-  win.webContents.send('state', {
+  if (!handle || handle.isDestroyed()) return;
+  handle.send('state', {
     pinned: settings.alwaysOnTop,
     canGoBack: dict.navigationHistory.canGoBack(),
   });
@@ -158,6 +232,10 @@ ipcMain.on('bar', (_e, action) => {
   else if (action === 'home') goHome();
   else if (action === 'pin') setAlwaysOnTop(!settings.alwaysOnTop);
   else if (action === 'hide') win.hide();
+  else if (action === 'open') setHandleOpen(true);
+  else if (action === 'close') setHandleOpen(false);
+  else if (action === 'drag-start') startDrag();
+  else if (action === 'drag-end') stopDrag();
 });
 
 function showWindow() {
@@ -258,7 +336,6 @@ if (!app.requestSingleInstanceLock()) {
     loadSettings();
     createWindow();
     createTray();
-    if (process.argv.includes('--hidden')) win.once('ready-to-show', () => win.hide());
     const failed = registerHotkeys();
     if (failed.length) {
       tray.displayBalloon?.({

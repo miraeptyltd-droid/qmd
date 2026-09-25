@@ -3,36 +3,78 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
-<title>영어사전</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; }
-  body { font: 12px "Segoe UI", "Malgun Gothic", sans-serif; user-select: none; }
-  .bar {
-    height: 28px; display: flex; align-items: center; gap: 2px; padding: 0 4px;
-    background: #f5f6f8; border-bottom: 1px solid #e3e5e8;
-    -webkit-app-region: drag; /* 이 바를 잡고 창을 옮김 */
+  /* 창 맨 위에 겹쳐지는 손잡이. 평소엔 완전히 투명, 마우스를 올리면 반투명하게 나타남 */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font: 13px "Segoe UI", "Malgun Gothic", sans-serif; user-select: none; }
+  .handle {
+    position: absolute; inset: 0 0 auto 0; height: 34px;
+    display: flex; align-items: center; gap: 2px; padding: 0 6px;
+    background: rgba(30, 32, 36, .55); color: #fff;
+    backdrop-filter: blur(6px);
+    opacity: 0; transition: opacity .15s;
+    cursor: grab;
   }
-  .title { flex: 1; padding-left: 6px; color: #6b7280; }
+  body.open .handle { opacity: 1; }
+  body.dragging .handle { cursor: grabbing; }
+  .grip { flex: 1; height: 100%; display: flex; align-items: center; justify-content: center; }
+  .grip::before { content: ""; width: 36px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.55); }
   button {
-    -webkit-app-region: no-drag;
-    width: 26px; height: 22px; border: 0; border-radius: 5px; background: transparent;
-    color: #4b5563; font-size: 13px; line-height: 22px; padding: 0; cursor: pointer;
+    width: 28px; height: 26px; border: 0; border-radius: 6px; background: transparent;
+    color: #fff; font-size: 14px; line-height: 26px; padding: 0; cursor: pointer;
   }
-  button:hover { background: #e5e7eb; }
+  button:hover { background: rgba(255, 255, 255, .18); }
   button:disabled { opacity: .35; cursor: default; background: transparent; }
-  #pin.on { color: #2f6fe4; }
-  #hide:hover { background: #e81123; color: #fff; }
+  #pin { opacity: .5; }
+  #pin.on { opacity: 1; }
+  #hide:hover { background: #e81123; }
 </style>
 </head>
 <body>
-  <div class="bar">
+  <div class="handle" id="handle">
     <button id="back" title="뒤로 (Alt+←)" disabled>&#x2190;</button>
     <button id="home" title="처음 화면 (Alt+Home)">&#x2302;</button>
-    <span class="title">영어사전</span>
+    <div class="grip" title="끌어서 창 옮기기"></div>
     <button id="pin" title="항상 위에 표시">&#x1F4CC;&#xFE0E;</button>
     <button id="hide" title="숨기기 (Esc)">&#x2715;</button>
   </div>
 <script>
+  const body = document.body;
+  const handle = document.getElementById('handle');
+  let closeTimer = null;
+  let dragging = false;
+
+  // 마우스가 맨 위 가장자리에 닿으면 펼치고, 벗어나면 잠시 뒤 접음
+  document.documentElement.addEventListener('mouseenter', () => {
+    clearTimeout(closeTimer);
+    body.classList.add('open');
+    window.bar.send('open');
+  });
+  document.documentElement.addEventListener('mouseleave', () => {
+    if (dragging) return;
+    closeTimer = setTimeout(() => {
+      body.classList.remove('open');
+      window.bar.send('close');
+    }, 400);
+  });
+
+  // 버튼이 아닌 곳을 누르고 끌면 창 옮기기
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    dragging = true;
+    body.classList.add('dragging');
+    handle.setPointerCapture(e.pointerId);
+    window.bar.send('drag-start');
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    body.classList.remove('dragging');
+    window.bar.send('drag-end');
+  };
+  handle.addEventListener('pointerup', endDrag);
+  handle.addEventListener('lostpointercapture', endDrag);
+
   for (const id of ['back', 'home', 'pin', 'hide']) {
     document.getElementById(id).addEventListener('click', () => window.bar.send(id));
   }

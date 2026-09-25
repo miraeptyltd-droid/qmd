@@ -1,7 +1,7 @@
 {
   "name": "naver-dict-widget",
   "productName": "영어사전 위젯",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "네이버 영어사전을 작은 위젯 창으로 띄워 쓰는 PC 프로그램",
   "main": "main.js",
   "type": "commonjs",
