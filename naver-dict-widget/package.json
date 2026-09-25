@@ -1,0 +1,34 @@
+{
+  "name": "naver-dict-widget",
+  "productName": "영어사전 위젯",
+  "version": "1.0.0",
+  "description": "네이버 영어사전을 작은 위젯 창으로 띄워 쓰는 PC 프로그램",
+  "main": "main.js",
+  "type": "commonjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable nsis"
+  },
+  "build": {
+    "appId": "local.dict.widget",
+    "productName": "EnglishDictWidget",
+    "files": ["main.js", "assets/**"],
+    "win": {
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "portable": { "artifactName": "EnglishDictWidget-portable.exe" },
+    "nsis": {
+      "artifactName": "EnglishDictWidget-setup.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "영어사전 위젯"
+    }
+  },
+  "devDependencies": {
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.0"
+  }
+}

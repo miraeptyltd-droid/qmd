@@ -1,0 +1,28 @@
+name: 영어사전 위젯 (Windows 빌드)
+
+on:
+  push:
+    paths:
+      - "naver-dict-widget/**"
+      - ".github/workflows/naver-dict-widget.yml"
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: naver-dict-widget
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npx electron-builder --win portable nsis --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EnglishDictWidget-windows
+          path: |
+            naver-dict-widget/dist/EnglishDictWidget-portable.exe
+            naver-dict-widget/dist/EnglishDictWidget-setup.exe
